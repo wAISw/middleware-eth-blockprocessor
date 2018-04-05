@@ -17,6 +17,7 @@ const _ = require('lodash'),
   bunyan = require('bunyan'),
   amqp = require('amqplib'),
   log = bunyan.createLogger({name: 'app'}),
+  MasterNode = require('./services/MasterNode'),
   filterTxsByAccountService = require('./services/filterTxsByAccountService');
 
 [mongoose.accounts, mongoose.connection].forEach(connection =>
@@ -35,7 +36,7 @@ const init = async () => {
   });
 
   
-  const blockCacheService = new BlockCacheService(web3Service);
+
 
 
 
@@ -52,9 +53,18 @@ const init = async () => {
     process.exit(0);
   });
 
+
   await channel.assertExchange('events', 'topic', {durable: false});
 
+  const masterNode = new MasterNode(channel, (msg) => log.info(msg));
+  await masterNode.start();
+
+  const blockCacheService = new BlockCacheService(web3Service, masterNode);
+
   blockCacheService.events.on('block', async block => {
+    if (!await masterNode.isSyncMaster())
+      return;
+
     log.info('%s (%d) added to cache.', block.hash, block.number);
     const filteredTxs = await filterTxsByAccountService(block.transactions);
 
@@ -71,6 +81,9 @@ const init = async () => {
 
 
   blockCacheService.events.on('pending', async (txHash) => {
+    if (!await masterNode.isSyncMaster())
+      return;
+      
     let tx = await web3Service.getTransaction(txHash);
 
     tx.logs = [];
